@@ -810,7 +810,7 @@ do_ssh_harden() {
 }
 
 # ============================================================
-#  2) 系统更新
+#  3) 系统更新
 # ============================================================
 do_system_update() {
   echo -e "${C_CYAN}=== 系统更新 ===${C_RESET}"
@@ -836,66 +836,7 @@ do_system_update() {
 }
 
 # ============================================================
-#  3) 安装Nezha探针 (Nezha Agent)
-# ============================================================
-do_nezha_install() {
-  echo -e "${C_CYAN}=== 安装Nezha探针 (Nezha Agent) ===${C_RESET}"
-  echo ""
-
-  # 检查并安装 unzip（探针安装脚本依赖 unzip）
-  if ! command -v unzip &>/dev/null; then
-    echo -e "${C_YELLOW}未检测到 unzip，正在自动安装...${C_RESET}"
-    if command -v apt-get &>/dev/null; then
-      apt-get update -qq && apt-get install -y -qq unzip
-    elif command -v yum &>/dev/null; then
-      yum install -y unzip
-    elif command -v dnf &>/dev/null; then
-      dnf install -y unzip
-    elif command -v apk &>/dev/null; then
-      apk add unzip
-    else
-      echo -e "${C_RED}无法自动安装 unzip，请手动安装后重试${C_RESET}"
-      return 1
-    fi
-    if command -v unzip &>/dev/null; then
-      echo -e "${C_GREEN}unzip 安装成功${C_RESET}"
-    else
-      echo -e "${C_RED}unzip 安装失败，请手动安装后重试${C_RESET}"
-      return 1
-    fi
-  fi
-
-  echo "请粘贴完整的安装命令（包含 NZ_SERVER、NZ_CLIENT_SECRET 等参数）："
-  echo -e "${C_GRAY}示例: curl -L https://raw.githubusercontent.com/nezhahq/scripts/main/agent/install.sh -o agent.sh && chmod +x agent.sh && env NZ_SERVER=... NZ_TLS=true NZ_CLIENT_SECRET=... NZ_UUID=... ./agent.sh${C_RESET}"
-  echo ""
-
-  local cmd
-  read -r cmd
-
-  if [[ -z "$cmd" ]]; then
-    echo "命令为空，已取消"
-    return 1
-  fi
-
-  if ! echo "$cmd" | grep -q "NZ_SERVER" || ! echo "$cmd" | grep -q "NZ_CLIENT_SECRET"; then
-    echo "命令中未找到 NZ_SERVER 或 NZ_CLIENT_SECRET，请检查"
-    return 1
-  fi
-
-  echo ""
-  echo -e "即将执行：\n${C_GRAY}${cmd}${C_RESET}"
-  read -rp "确认执行？[y/N]: " confirm
-  if [[ "${confirm,,}" != "y" ]]; then
-    echo "已取消"
-    return 0
-  fi
-
-  eval "$cmd"
-  echo -e "\n${C_CYAN}探针安装命令已执行${C_RESET}"
-}
-
-# ============================================================
-#  4) 服务器质量检测 (NodeQuality)
+#  7) 服务器质量检测 (NodeQuality)
 # ============================================================
 do_node_quality() {
   echo -e "${C_CYAN}=== 服务器质量检测 (NodeQuality) ===${C_RESET}"
@@ -903,7 +844,7 @@ do_node_quality() {
 }
 
 # ============================================================
-#  5) Snell 安装
+#  4) Snell 安装
 # ============================================================
 do_snell_install() {
   echo -e "${C_CYAN}=== Snell 安装 ===${C_RESET}"
@@ -911,7 +852,7 @@ do_snell_install() {
 }
 
 # ============================================================
-#  6) 清理备份文件
+#  10) 清理备份文件
 # ============================================================
 do_cleanup_backups() {
   echo -e "\n${C_BOLD_WHITE}━━━━━━━━━━ 清理备份文件 ━━━━━━━━━━${C_RESET}\n"
@@ -950,7 +891,7 @@ do_cleanup_backups() {
 }
 
 # ============================================================
-#  7) Cloudflare 测速
+#  8) Cloudflare 测速
 # ============================================================
 do_speedtest() {
   local tmpdir MEAS_ID RESULTS_FILE TIMESTAMP
@@ -1013,7 +954,7 @@ do_speedtest() {
 }
 
 # ============================================================
-#  8) 防火墙管理 (ufw)
+#  5) 防火墙管理 (ufw)
 # ============================================================
 
 # 获取当前 SSH 端口
@@ -1336,7 +1277,7 @@ do_firewall() {
 }
 
 # ============================================================
-#  9) 端口转发 (nftables)
+#  6) 端口转发 (nftables)
 # ============================================================
 
 NFT_CONF_DIR="/etc/nftables.d"
@@ -2585,7 +2526,7 @@ do_nft_forward() {
 }
 
 # ============================================================
-#  10) 修改主机名
+#  2) 修改主机名
 # ============================================================
 do_change_hostname() {
   local current_hostname
@@ -2636,216 +2577,7 @@ do_change_hostname() {
 }
 
 # ============================================================
-#  11) 桌面环境与远程桌面
-# ============================================================
-_desktop_is_supported_os() {
-  local os_id="${1:-}"
-  [[ "$os_id" == "ubuntu" || "$os_id" == "debian" ]]
-}
-
-_desktop_validate_username() {
-  local username="${1:-}"
-
-  if [[ -z "$username" || "$username" == "root" ]]; then
-    return 1
-  fi
-
-  [[ "$username" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]
-}
-
-_desktop_get_os_id() {
-  local os_id=""
-
-  if [[ -r /etc/os-release ]]; then
-    os_id="$(
-      . /etc/os-release
-      printf '%s' "${ID:-}"
-    )"
-  fi
-
-  printf '%s\n' "$os_id"
-}
-
-_desktop_list_regular_users() {
-  awk -F: '($3 >= 1000) && $1 != "root" && $7 !~ /(nologin|false)$/ {print $1}' /etc/passwd || true
-}
-
-_desktop_user_exists() {
-  id -u "$1" >/dev/null 2>&1
-}
-
-_desktop_get_home_dir() {
-  getent passwd "$1" | cut -d: -f6
-}
-
-_desktop_pick_user() {
-  local username create_confirm users
-
-  users="$(_desktop_list_regular_users)"
-  echo -e "${C_CYAN}可用于远程桌面的普通用户：${C_RESET}" >&2
-  if [[ -n "$users" ]]; then
-    while IFS= read -r user; do
-      echo "  - ${user}" >&2
-    done <<< "$users"
-  else
-    echo "  - 当前未检测到可用普通用户，请输入新用户名创建" >&2
-  fi
-  echo "" >&2
-
-  while true; do
-    read -rp "请输入远程桌面用户名: " username >&2
-    username="${username// /}"
-
-    if ! _desktop_validate_username "$username"; then
-      echo -e "   ${C_RED}✗ 用户名无效，且不能使用 root${C_RESET}" >&2
-      continue
-    fi
-
-    if _desktop_user_exists "$username"; then
-      printf '%s\n' "$username"
-      return 0
-    fi
-
-    read -rp "用户 ${username} 不存在，是否现在创建？[y/N]: " create_confirm >&2
-    if [[ "${create_confirm,,}" != "y" ]]; then
-      echo -e "   ${C_YELLOW}● 已取消创建，请重新输入${C_RESET}" >&2
-      continue
-    fi
-
-    useradd -m -s /bin/bash "$username"
-    passwd "$username"
-    printf '%s\n' "$username"
-    return 0
-  done
-}
-
-_desktop_write_xsession() {
-  local username="$1"
-  local home_dir
-
-  home_dir="$(_desktop_get_home_dir "$username")"
-  if [[ -z "$home_dir" || ! -d "$home_dir" ]]; then
-    echo -e "   ${C_RED}✗ 无法确定用户 ${username} 的家目录${C_RESET}"
-    return 1
-  fi
-
-  printf 'startxfce4\n' > "${home_dir}/.xsession"
-  chown "${username}:${username}" "${home_dir}/.xsession"
-  chmod 644 "${home_dir}/.xsession"
-}
-
-_desktop_ufw_has_added_command() {
-  local expected="$1"
-  ufw show added 2>/dev/null | grep -Fqx "$expected"
-}
-
-_desktop_allow_xrdp_port() {
-  local source_ip="${1:-}"
-  local confirm_enable ssh_port
-
-  _ensure_ufw || return 1
-
-  if ufw status 2>/dev/null | grep -qw "active"; then
-    if [[ -n "$source_ip" ]]; then
-      if _desktop_ufw_has_added_command "ufw allow from ${source_ip} to any port 3389 proto tcp"; then
-        echo -e "   ${C_YELLOW}● 已存在 XRDP 来源限制规则，跳过重复添加${C_RESET}"
-      else
-        ufw allow from "$source_ip" to any port 3389 proto tcp >/dev/null 2>&1
-      fi
-    else
-      if _desktop_ufw_has_added_command "ufw allow 3389/tcp"; then
-        echo -e "   ${C_YELLOW}● 已存在 XRDP 放行规则，跳过重复添加${C_RESET}"
-      else
-        ufw allow 3389/tcp >/dev/null 2>&1
-      fi
-    fi
-    return 0
-  fi
-
-  read -rp "   检测到 ufw 未启用，是否现在启用？[y/N]: " confirm_enable
-  if [[ "${confirm_enable,,}" != "y" ]]; then
-    echo -e "   ${C_YELLOW}● 未启用 ufw，请确认云侧和本机策略允许访问 3389${C_RESET}"
-    return 0
-  fi
-
-  ssh_port="$(_get_ssh_port)"
-  if ! _desktop_ufw_has_added_command "ufw allow ${ssh_port}/tcp"; then
-    ufw allow "${ssh_port}/tcp" >/dev/null 2>&1
-  fi
-
-  if [[ -n "$source_ip" ]]; then
-    if ! _desktop_ufw_has_added_command "ufw allow from ${source_ip} to any port 3389 proto tcp"; then
-      ufw allow from "$source_ip" to any port 3389 proto tcp >/dev/null 2>&1
-    fi
-  else
-    if ! _desktop_ufw_has_added_command "ufw allow 3389/tcp"; then
-      ufw allow 3389/tcp >/dev/null 2>&1
-    fi
-  fi
-
-  ufw --force enable >/dev/null 2>&1
-}
-
-do_desktop_remote_setup() {
-  local os_id username limit_choice source_ip=""
-
-  echo -e "\n${C_BOLD_WHITE}━━━━━━━━━━ 安装桌面环境与远程桌面 ━━━━━━━━━━${C_RESET}\n"
-
-  echo -e "${C_CYAN}[1/6] 检查系统${C_RESET}"
-  os_id="$(_desktop_get_os_id)"
-  if ! _desktop_is_supported_os "$os_id"; then
-    echo -e "   ${C_RED}✗ 当前仅支持 Ubuntu / Debian${C_RESET}"
-    return 1
-  fi
-  echo -e "   ${C_GREEN}✓ 已确认系统为 ${os_id}${C_RESET}\n"
-
-  echo -e "${C_CYAN}[2/6] 安装 XFCE 与 XRDP${C_RESET}"
-  apt-get update
-  apt-get install -y xfce4 xfce4-goodies xrdp xorgxrdp
-  usermod -aG ssl-cert xrdp
-  echo -e "   ${C_GREEN}✓ 软件包安装完成${C_RESET}\n"
-
-  echo -e "${C_CYAN}[3/6] 配置远程桌面用户${C_RESET}"
-  username="$(_desktop_pick_user)"
-  echo -e "   ${C_GREEN}✓ 远程桌面用户: ${username}${C_RESET}\n"
-
-  echo -e "${C_CYAN}[4/6] 配置桌面会话${C_RESET}"
-  _desktop_write_xsession "$username" || return 1
-  echo -e "   ${C_GREEN}✓ 已为 ${username} 写入 XFCE 会话${C_RESET}\n"
-
-  echo -e "${C_CYAN}[5/6] 配置防火墙${C_RESET}"
-  read -rp "   是否限制 XRDP 来源 IP？[y/N]: " limit_choice
-  if [[ "${limit_choice,,}" == "y" ]]; then
-    read -rp "   请输入来源 IP 或 CIDR: " source_ip
-    source_ip="${source_ip// /}"
-    if ! _validate_ip_or_cidr "$source_ip"; then
-      echo -e "   ${C_RED}✗ 来源 IP 格式无效${C_RESET}"
-      return 1
-    fi
-  fi
-  _desktop_allow_xrdp_port "$source_ip" || return 1
-  echo -e "   ${C_GREEN}✓ XRDP 防火墙配置已处理${C_RESET}\n"
-
-  echo -e "${C_CYAN}[6/6] 启用并重启 XRDP${C_RESET}"
-  systemctl enable xrdp >/dev/null 2>&1
-  systemctl restart xrdp >/dev/null 2>&1
-  if ! systemctl is-active --quiet xrdp; then
-    echo -e "   ${C_RED}✗ xrdp 未成功启动，请检查: systemctl status xrdp / journalctl -u xrdp${C_RESET}"
-    return 1
-  fi
-  echo -e "   ${C_GREEN}✓ xrdp 已启用并启动${C_RESET}\n"
-
-  print_box \
-    "桌面环境: XFCE" \
-    "远程桌面端口: 3389" \
-    "登录用户: ${username}" \
-    "来源限制: ${source_ip:-所有来源}" \
-    "root 登录: 不支持" \
-    "连接方式: 使用 RDP 客户端连接 <服务器IP>:3389"
-}
-
-# ============================================================
-#  12) SSH 客户端配置管理  — 辅助函数
+#  9) SSH 客户端配置管理  — 辅助函数
 # ============================================================
 
 # 检查 config 文件中是否存在指定 Host 别名（精确匹配，不误匹配前缀）
@@ -3171,106 +2903,6 @@ do_ssh_config() {
 }
 
 # ============================================================
-#  13) 安装 Mosh 和 tmux
-# ============================================================
-
-# 放行 Mosh UDP 60000-61000 端口（自动识别 ufw / nftables / firewalld）
-_mosh_open_firewall_ports() {
-  local MOSH_PORTS="60000:61000"   # ufw/nftables 范围格式
-  local MOSH_FWD_PORTS="60000-61000"  # firewalld 范围格式
-  echo ""
-  echo -e "${C_CYAN}正在为 Mosh 放行 UDP ${MOSH_FWD_PORTS} 端口...${C_RESET}"
-
-  # --- ufw ---
-  if command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
-    ufw allow "${MOSH_PORTS}/udp" >/dev/null 2>&1
-    echo -e "   ${C_GREEN}✔ ufw：已放行 ${MOSH_PORTS}/udp${C_RESET}"
-    return 0
-  fi
-
-  # --- nftables ---
-  if command -v nft &>/dev/null && nft list ruleset 2>/dev/null | grep -q "type filter"; then
-    # 找到 input hook 的表+链名，追加 udp dport 放行规则
-    local nft_table nft_chain
-    nft_table=$(nft list ruleset 2>/dev/null | awk '/table/{t=$3} /hook input/{print t; exit}')
-    nft_chain=$(nft list ruleset 2>/dev/null | awk '/chain/{c=$2} /hook input/{print c; exit}')
-    if [[ -n "$nft_table" && -n "$nft_chain" ]]; then
-      nft add rule inet "$nft_table" "$nft_chain" udp dport 60000-61000 accept 2>/dev/null
-      echo -e "   ${C_GREEN}✔ nftables：已在 ${nft_table}/${nft_chain} 放行 udp dport 60000-61000${C_RESET}"
-      return 0
-    fi
-  fi
-
-  # --- firewalld ---
-  if command -v firewall-cmd &>/dev/null && firewall-cmd --state 2>/dev/null | grep -q "running"; then
-    firewall-cmd --permanent --add-port="${MOSH_FWD_PORTS}/udp" >/dev/null 2>&1
-    firewall-cmd --reload >/dev/null 2>&1
-    echo -e "   ${C_GREEN}✔ firewalld：已放行 ${MOSH_FWD_PORTS}/udp（permanent）${C_RESET}"
-    return 0
-  fi
-
-  # --- 未检测到活跃防火墙 ---
-  echo -e "   ${C_YELLOW}⚠ 未检测到活跃的防火墙（ufw/nftables/firewalld），跳过自动放行${C_RESET}"
-  echo -e "   ${C_YELLOW}  如有需要请手动放行 UDP 60000-61000${C_RESET}"
-}
-
-do_mosh_tmux_install() {
-  echo -e "${C_CYAN}=== 安装 Mosh 和 tmux ===${C_RESET}"
-  echo ""
-
-  # 检测包管理器
-  local pkg_mgr=""
-  if command -v apt-get &>/dev/null; then
-    pkg_mgr="apt"
-  elif command -v dnf &>/dev/null; then
-    pkg_mgr="dnf"
-  elif command -v yum &>/dev/null; then
-    pkg_mgr="yum"
-  elif command -v apk &>/dev/null; then
-    pkg_mgr="apk"
-  else
-    echo -e "${C_RED}未检测到支持的包管理器（apt/dnf/yum/apk），无法自动安装${C_RESET}"
-    return 1
-  fi
-
-  # 安装 Mosh
-  echo -e "${C_CYAN}正在安装 Mosh...${C_RESET}"
-  case "$pkg_mgr" in
-    apt) apt-get update -qq && apt-get install -y mosh ;;
-    dnf) dnf install -y mosh ;;
-    yum) yum install -y mosh ;;
-    apk) apk add --no-cache mosh ;;
-  esac
-  if command -v mosh &>/dev/null; then
-    echo -e "${C_GREEN}✔ Mosh 安装成功：$(mosh --version 2>&1 | head -1)${C_RESET}"
-    # 安装成功后自动放行 Mosh 所需的 UDP 端口范围
-    _mosh_open_firewall_ports
-  else
-    echo -e "${C_RED}✘ Mosh 安装失败，请检查包源或手动安装${C_RESET}"
-  fi
-
-  echo ""
-
-  # 安装 tmux
-  echo -e "${C_CYAN}正在安装 tmux...${C_RESET}"
-  case "$pkg_mgr" in
-    apt) apt-get install -y tmux ;;
-    dnf) dnf install -y tmux ;;
-    yum) yum install -y tmux ;;
-    apk) apk add --no-cache tmux ;;
-  esac
-  if command -v tmux &>/dev/null; then
-    echo -e "${C_GREEN}✔ tmux 安装成功：$(tmux -V)${C_RESET}"
-  else
-    echo -e "${C_RED}✘ tmux 安装失败，请检查包源或手动安装${C_RESET}"
-  fi
-
-  echo ""
-  echo -e "${C_CYAN}      mosh user@host        # 连接远程服务器${C_RESET}"
-  echo -e "${C_CYAN}      tmux new -s main      # 创建新会话${C_RESET}"
-}
-
-# ============================================================
 #  主菜单
 # ============================================================
 show_menu() {
@@ -3281,16 +2913,13 @@ show_menu() {
   echo " 1) SSH 安全加固"
   echo " 2) 修改主机名"
   echo " 3) 系统更新"
-  echo " 4) 安装Nezha探针 (Nezha Agent)"
-  echo " 5) Snell 安装"
-  echo " 6) 防火墙管理"
-  echo " 7) 端口转发 (nftables)"
-  echo " 8) 服务器质量检测 (NodeQuality)"
-  echo " 9) Cloudflare 测速"
+  echo " 4) Snell 安装"
+  echo " 5) 防火墙管理"
+  echo " 6) 端口转发 (nftables)"
+  echo " 7) 服务器质量检测 (NodeQuality)"
+  echo " 8) Cloudflare 测速"
+  echo " 9) SSH 客户端配置管理"
   echo " 10) 清理备份文件"
-  echo " 11) 安装桌面环境与远程桌面"
-  echo " 12) SSH 客户端配置管理"
-  echo " 13) 安装 Mosh 和 tmux"
   echo " 0) 退出"
   echo -e "${C_CYAN}=========================================${C_RESET}"
 }
@@ -3298,22 +2927,19 @@ show_menu() {
 main() {
   while true; do
     show_menu
-    read -rp "请输入选项 [0-13]: " choice
+    read -rp "请输入选项 [0-10]: " choice
     echo ""
     case "$choice" in
       1) require_root && do_ssh_harden || true ;;
       2) require_root && do_change_hostname || true ;;
       3) require_root && do_system_update || true ;;
-      4) require_root && do_nezha_install || true ;;
-      5) require_root && do_snell_install || true ;;
-      6) require_root && do_firewall || true ;;
-      7) require_root && do_nft_forward || true ;;
-      8) do_node_quality || true ;;
-      9) do_speedtest || true ;;
+      4) require_root && do_snell_install || true ;;
+      5) require_root && do_firewall || true ;;
+      6) require_root && do_nft_forward || true ;;
+      7) do_node_quality || true ;;
+      8) do_speedtest || true ;;
+      9) do_ssh_config || true ;;
       10) require_root && do_cleanup_backups || true ;;
-      11) require_root && do_desktop_remote_setup || true ;;
-      12) do_ssh_config || true ;;
-      13) require_root && do_mosh_tmux_install || true ;;
       0) echo "再见！"; exit 0 ;;
       *) echo "无效选项，请重新输入" ;;
     esac
