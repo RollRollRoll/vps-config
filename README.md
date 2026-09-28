@@ -88,7 +88,17 @@ sudo ./vps_tools.sh
 
 ### 4. Snell 安装
 
-- 调用外部菜单脚本进行 Snell 相关安装流程
+- 使用 [jinqians/snell.sh](https://github.com/jinqians/snell.sh#使用方法)
+  推荐的自动识别系统入口：`https://install.jinqians.com`
+- 下载成功且内容非空后，以 `sh` 执行安装入口，并按上游交互提示继续
+- 上游入口为 Debian / Ubuntu、CentOS / RHEL 选择对应脚本；当前 Alpine
+  分支转到 `snell-docker.jinqians.com` 的 Docker 安装方案
+
+上游推荐命令：
+
+```bash
+sh -c "$(curl -fsSL https://install.jinqians.com)"
+```
 
 该功能本质上依赖远程脚本，执行前请自行评估来源可信度和版本兼容性。
 

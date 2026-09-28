@@ -847,8 +847,20 @@ do_node_quality() {
 #  4) Snell 安装
 # ============================================================
 do_snell_install() {
+  local installer
   echo -e "${C_CYAN}=== Snell 安装 ===${C_RESET}"
-  bash <(curl -L -s menu.jinqians.com)
+  echo "使用上游安装入口，自动识别系统并按提示安装。"
+
+  if ! installer=$(curl -fsSL https://install.jinqians.com); then
+    echo -e "${C_RED}Snell 安装脚本下载失败，请检查网络后重试${C_RESET}" >&2
+    return 1
+  fi
+  if [[ -z "${installer//[[:space:]]/}" ]]; then
+    echo -e "${C_RED}Snell 安装脚本内容为空，已停止执行${C_RESET}" >&2
+    return 1
+  fi
+
+  sh -c "$installer"
 }
 
 # ============================================================
