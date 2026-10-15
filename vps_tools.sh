@@ -812,23 +812,94 @@ do_ssh_harden() {
 # ============================================================
 #  3) 系统更新
 # ============================================================
+_system_apt_refresh_indexes() {
+  local manager="$1" bypass_cache="${2:-}"
+  local -a args=(update -o APT::Update::Error-Mode=any)
+  if [[ "$bypass_cache" == "no-cache" ]]; then
+    args+=(-o Acquire::http::No-Cache=true -o Acquire::https::No-Cache=true)
+  fi
+  if ! LC_ALL=C "$manager" "${args[@]}"; then
+    echo "APT 索引刷新失败，已停止升级，避免继续使用旧索引。" >&2
+    echo "请检查网络和软件源；若出现 404 或 Release 错误，请核对源地址、发行版代号及支持状态。" >&2
+    echo "软件源配置位于 /etc/apt/sources.list 和 /etc/apt/sources.list.d/。" >&2
+    return 1
+  fi
+}
+
+# 用子 shell 隔离临时日志和清理 trap，不覆盖主脚本或调用方的 trap。
+_system_update_apt() (
+  local manager="$1" log_file attempt
+  local -a upgrade_args=(upgrade -y) pipeline_status
+  # 保持原 apt upgrade 允许安装新依赖、但不移除现有软件包的行为。
+  if [[ "$manager" == "apt-get" ]]; then
+    upgrade_args+=(--with-new-pkgs)
+  fi
+  if ! log_file=$(mktemp "${TMPDIR:-/tmp}/vps-apt-upgrade.XXXXXX"); then
+    echo "无法创建 APT 临时日志，已停止更新，请检查临时目录权限和磁盘空间。" >&2
+    return 1
+  fi
+  trap 'rm -f -- "$log_file"' EXIT
+  set -o pipefail
+
+  _system_apt_refresh_indexes "$manager" || return 1
+  for attempt in 1 2; do
+    # 明确判断管道结果；主菜单的 || true 会让函数内的 errexit 失效。
+    if LC_ALL=C "$manager" "${upgrade_args[@]}" 2>&1 | tee "$log_file"; then
+      return 0
+    else
+      pipeline_status=("${PIPESTATUS[@]}")
+    fi
+    if [[ "${pipeline_status[1]}" -ne 0 ]]; then
+      echo "APT 升级输出记录失败，请检查磁盘空间和上方输出；本次更新未确认成功。" >&2
+      return 1
+    fi
+
+    # 只恢复明确的软件包下载 404，不把源索引、签名或 dpkg 故障当成此类错误。
+    if grep -Eq '^E: Failed to fetch https?://[^[:space:]]+\.deb(\?[^[:space:]]*)?[[:space:]]+404([[:space:]]|$)' "$log_file"; then
+      if [[ "$attempt" -eq 1 ]]; then
+        echo "检测到软件包下载 404，正在绕过 HTTP/HTTPS 缓存刷新索引，并重试升级一次..."
+        _system_apt_refresh_indexes "$manager" no-cache || return 1
+      else
+        echo "刷新索引后软件包仍返回 404，已停止重试。" >&2
+        echo "请检查镜像同步及软件源是否仍支持当前发行版，再重新执行系统更新。" >&2
+        return 1
+      fi
+    else
+      echo "APT 升级失败，请先处理上方错误后重试。" >&2
+      return 1
+    fi
+  done
+)
+
 do_system_update() {
   echo -e "${C_CYAN}=== 系统更新 ===${C_RESET}"
 
-  if command -v apt &>/dev/null; then
+  if command -v apt-get &>/dev/null; then
+    echo "检测到 apt-get，开始更新..."
+    _system_update_apt apt-get || return 1
+  elif command -v apt &>/dev/null; then
     echo "检测到 apt，开始更新..."
-    apt update && apt upgrade -y
+    _system_update_apt apt || return 1
   elif command -v dnf &>/dev/null; then
     echo "检测到 dnf，开始更新..."
-    dnf upgrade -y
+    if ! dnf upgrade -y; then
+      echo "系统更新失败，请检查 dnf 输出。" >&2
+      return 1
+    fi
   elif command -v yum &>/dev/null; then
     echo "检测到 yum，开始更新..."
-    yum update -y
+    if ! yum update -y; then
+      echo "系统更新失败，请检查 yum 输出。" >&2
+      return 1
+    fi
   elif command -v apk &>/dev/null; then
     echo "检测到 apk，开始更新..."
-    apk update && apk upgrade
+    if ! apk update || ! apk upgrade; then
+      echo "系统更新失败，请检查 apk 输出。" >&2
+      return 1
+    fi
   else
-    echo "未检测到支持的包管理器（apt/dnf/yum/apk）"
+    echo "未检测到支持的包管理器（apt-get/apt/dnf/yum/apk）"
     return 1
   fi
 
