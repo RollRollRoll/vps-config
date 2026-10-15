@@ -864,7 +864,7 @@ do_snell_install() {
 }
 
 # ============================================================
-#  10) 清理备份文件
+#  11) 清理备份文件
 # ============================================================
 do_cleanup_backups() {
   echo -e "\n${C_BOLD_WHITE}━━━━━━━━━━ 清理备份文件 ━━━━━━━━━━${C_RESET}\n"
@@ -2922,7 +2922,7 @@ do_ssh_config() {
 }
 
 # ============================================================
-#  11) Tailscale 安装与运维
+#  10) Tailscale 安装与运维
 # ============================================================
 _tailscale_confirm() {
   local answer
@@ -3287,8 +3287,8 @@ show_menu() {
   echo " 7) 服务器质量检测 (NodeQuality)"
   echo " 8) Cloudflare 测速"
   echo " 9) SSH 客户端配置管理"
-  echo " 10) 清理备份文件"
-  echo " 11) Tailscale 安装与运维"
+  echo " 10) Tailscale 安装与运维"
+  echo " 11) 清理备份文件"
   echo " 0) 退出"
   echo -e "${C_CYAN}=========================================${C_RESET}"
 }
@@ -3308,8 +3308,8 @@ main() {
       7) do_node_quality || true ;;
       8) do_speedtest || true ;;
       9) do_ssh_config || true ;;
-      10) require_root && do_cleanup_backups || true ;;
-      11) do_tailscale || true ;;
+      10) do_tailscale || true ;;
+      11) require_root && do_cleanup_backups || true ;;
       0) echo "再见！"; exit 0 ;;
       *) echo "无效选项，请重新输入" ;;
     esac

@@ -20,8 +20,8 @@
 7. 服务器质量检测（NodeQuality）
 8. Cloudflare 测速
 9. SSH 客户端配置管理
-10. 清理备份文件
-11. Tailscale 安装与运维
+10. Tailscale 安装与运维
+11. 清理备份文件
 
 其中大多数功能需要 `root` 权限，测速和部分只读检测功能可在普通用户下执行，
 但为了减少权限相关的中断，建议使用 `sudo` 或 `root` 用户运行整个脚本。
@@ -145,15 +145,9 @@ Cloudflare 的链路表现。
   生成新密钥对（ed25519 / rsa-4096 / ecdsa-521）、提供已有私钥路径、粘贴私钥和公钥内容
 - **删除** Host：精确匹配别名，操作前自动备份 `~/.ssh/config`
 
-### 10. 清理备份文件
+### 10. Tailscale 安装与运维
 
-- 清理脚本执行过程中生成的 SSH 和 `ssh.socket` 备份文件
-
-建议在确认当前配置稳定可用后再执行，避免误删仍需回滚的备份。
-
-### 11. Tailscale 安装与运维
-
-主菜单选择 `11`，进入独立的 Tailscale 管理菜单：
+主菜单选择 `10`，进入独立的 Tailscale 管理菜单：
 
 - **安装**：Linux 上下载并执行 [Tailscale 官方安装脚本](https://tailscale.com/install.sh)；
   Alpine 使用 `apk` 安装 `tailscale`，OpenRC 环境同时安装 `tailscale-openrc`
@@ -184,6 +178,12 @@ Cloudflare 的链路表现。
 检测到已安装 Tailscale 时，会阻止 nftables 菜单中的“安装并接管”操作；
 已有端口转发规则仍可管理。现有端口转发使用公网地址进行 SNAT，
 转发到 Tailnet 节点的场景需要单独配置与验证。
+
+### 11. 清理备份文件
+
+- 清理脚本执行过程中生成的 SSH 和 `ssh.socket` 备份文件
+
+建议在确认当前配置稳定可用后再执行，避免误删仍需回滚的备份。
 
 ## 注意事项
 
