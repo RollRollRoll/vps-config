@@ -93,13 +93,13 @@ run_case() {
 
 test_confirmation() (
   local answer
-  for answer in 是 确认 继续; do
-    assert_success _tailscale_confirm 安装 软件包 系统变更 <<< "$answer" >/dev/null
+  for answer in y Y; do
+    assert_success _tailscale_confirm 安装 <<< "$answer" >/dev/null
   done
-  for answer in '' y Y yes n 否; do
-    assert_failure _tailscale_confirm 安装 软件包 系统变更 <<< "$answer" >/dev/null
+  for answer in '' n N yes 是 确认 继续; do
+    assert_failure _tailscale_confirm 安装 <<< "$answer" >/dev/null
   done
-  assert_failure _tailscale_confirm 安装 软件包 系统变更 </dev/null >/dev/null
+  assert_failure _tailscale_confirm 安装 </dev/null >/dev/null
 )
 
 test_service_names() (
@@ -120,14 +120,14 @@ test_install_already_present() (
 test_install_cancelled() (
   stub_common_commands
   hide_tailscale_and_apk
-  _tailscale_install <<< '否' >/dev/null 2>&1 || true
+  _tailscale_install <<< 'n' >/dev/null 2>&1 || true
   assert_commands '' '取消安装不执行下载、包管理或服务命令'
 )
 
 test_install_download_failure() (
   stub_common_commands
   hide_tailscale_and_apk
-  assert_failure _tailscale_install <<< '确认' >/dev/null 2>&1
+  assert_failure _tailscale_install <<< 'y' >/dev/null 2>&1
   local commands
   commands="$(cat "$TAILSCALE_TEST_LOG")"
   [[ "$commands" == curl* ]] || test_fail '安装应尝试下载官方脚本'
@@ -140,7 +140,7 @@ test_install_empty_script() (
   stub_common_commands
   hide_tailscale_and_apk
   curl() { record_command curl "$@"; printf ' \n\t'; }
-  assert_failure _tailscale_install <<< '确认' >/dev/null 2>&1
+  assert_failure _tailscale_install <<< 'y' >/dev/null 2>&1
   local commands
   commands="$(cat "$TAILSCALE_TEST_LOG")"
   [[ "$commands" == curl* ]] || test_fail '安装应尝试下载官方脚本'
@@ -152,7 +152,7 @@ test_install_script_failure() (
   stub_common_commands
   hide_tailscale_and_apk
   curl() { record_command curl "$@"; printf '%s\n' '安装脚本桩'; }
-  assert_failure _tailscale_install <<< '确认' >/dev/null 2>&1
+  assert_failure _tailscale_install <<< 'y' >/dev/null 2>&1
   local commands
   commands="$(cat "$TAILSCALE_TEST_LOG")"
   [[ "$commands" == *$'\nsh <-c> <安装脚本桩>'* ]] || test_fail '下载成功后应执行安装脚本桩'
@@ -173,7 +173,7 @@ test_install_official_script_success() (
   }
   curl() { record_command curl "$@"; printf '%s\n' '安装脚本桩'; }
   sh() { record_command sh "$@"; installed=1; return 0; }
-  assert_success _tailscale_install <<< '确认' >/dev/null 2>&1
+  assert_success _tailscale_install <<< 'y' >/dev/null 2>&1
   assert_commands $'curl <-fsSL> <--connect-timeout> <15> <--max-time> <180> <https://tailscale.com/install.sh>\nsh <-c> <安装脚本桩>\nstart-service' \
     '官方脚本安装成功后才启动服务'
 )
@@ -189,7 +189,7 @@ test_install_openrc() (
     builtin command "$@"
   }
   apk() { record_command apk "$@"; installed=1; return 0; }
-  assert_success _tailscale_install <<< '确认' >/dev/null 2>&1
+  assert_success _tailscale_install <<< 'y' >/dev/null 2>&1
   assert_commands $'apk <add> <--no-cache> <tailscale> <tailscale-openrc>\nstart-service' \
     'OpenRC 安装同时包含服务包并在成功后启动'
 )
@@ -201,14 +201,14 @@ test_install_openrc_failure() (
     if [[ "${1:-}" == "-v" && "${2:-}" == "tailscale" ]]; then return 1; fi
     builtin command "$@"
   }
-  assert_failure _tailscale_install <<< '确认' >/dev/null 2>&1
+  assert_failure _tailscale_install <<< 'y' >/dev/null 2>&1
   assert_commands 'apk <add> <--no-cache> <tailscale> <tailscale-openrc>' \
     'OpenRC 软件包安装失败不能继续启动'
 )
 
 test_connect_cancelled() (
   stub_common_commands
-  _tailscale_connect <<< '否' >/dev/null 2>&1 || true
+  _tailscale_connect <<< 'n' >/dev/null 2>&1 || true
   assert_commands '' '取消连接不启动服务或修改 Tailscale'
 )
 
@@ -216,20 +216,20 @@ test_connect_root_denied() (
   stub_common_commands
   require_root() { return 1; }
   check_root() { return 1; }
-  assert_failure _tailscale_connect <<< '确认' >/dev/null 2>&1
+  assert_failure _tailscale_connect <<< 'y' >/dev/null 2>&1
   assert_commands '' '权限检查失败不启动服务或修改 Tailscale'
 )
 
 test_connect_preserves_preferences() (
   stub_common_commands
-  assert_success _tailscale_connect <<< '确认' >/dev/null 2>&1
+  assert_success _tailscale_connect <<< 'y' >/dev/null 2>&1
   assert_commands $'start-service\ntailscale <up>' '连接只执行无参数 tailscale up'
 )
 
 test_connect_service_failure() (
   stub_common_commands
   _tailscale_start_service() { record_command start-service; return 24; }
-  assert_failure _tailscale_connect <<< '确认' >/dev/null 2>&1
+  assert_failure _tailscale_connect <<< 'y' >/dev/null 2>&1
   assert_commands 'start-service' '服务启动失败后不能执行 tailscale up'
 )
 
@@ -260,64 +260,64 @@ test_service_start_wrapper_failure() (
 test_connect_cli_failure() (
   stub_common_commands
   tailscale() { record_command tailscale "$@"; return 25; }
-  assert_failure _tailscale_connect <<< '确认' >/dev/null 2>&1
+  assert_failure _tailscale_connect <<< 'y' >/dev/null 2>&1
   assert_commands $'start-service\ntailscale <up>' '连接失败必须返回失败'
 )
 
 test_single_preference() (
   stub_common_commands
-  assert_success _tailscale_change_preference accept-routes true <<< '继续' >/dev/null 2>&1
+  assert_success _tailscale_change_preference accept-routes true <<< 'y' >/dev/null 2>&1
   assert_commands 'tailscale <set> <--accept-routes=true>' '设置偏好只传入指定的一项参数'
 )
 
 test_preference_cancelled() (
   stub_common_commands
-  _tailscale_change_preference accept-routes true <<< '否' >/dev/null 2>&1 || true
+  _tailscale_change_preference accept-routes true <<< 'n' >/dev/null 2>&1 || true
   assert_commands '' '取消偏好设置不调用 Tailscale'
 )
 
 test_preference_cli_failure() (
   stub_common_commands
   tailscale() { record_command tailscale "$@"; return 25; }
-  assert_failure _tailscale_change_preference accept-dns false <<< '确认' >/dev/null 2>&1
+  assert_failure _tailscale_change_preference accept-dns false <<< 'y' >/dev/null 2>&1
   assert_commands 'tailscale <set> <--accept-dns=false>' '偏好设置失败必须返回失败'
 )
 
 test_preference_validation() (
   stub_common_commands
-  assert_failure _tailscale_change_preference unknown true <<< '确认' >/dev/null 2>&1
-  assert_failure _tailscale_change_preference ssh invalid <<< '确认' >/dev/null 2>&1
+  assert_failure _tailscale_change_preference unknown true <<< 'y' >/dev/null 2>&1
+  assert_failure _tailscale_change_preference ssh invalid <<< 'y' >/dev/null 2>&1
   assert_commands '' '非法偏好项或值不能传给 Tailscale'
 )
 
 test_disconnect() (
   stub_common_commands
-  assert_success _tailscale_disconnect down <<< '确认' >/dev/null 2>&1
+  assert_success _tailscale_disconnect down <<< 'y' >/dev/null 2>&1
   assert_commands 'tailscale <down>' '断开仅执行 tailscale down'
   : > "$TAILSCALE_TEST_LOG"
-  assert_success _tailscale_disconnect logout <<< '确认' >/dev/null 2>&1
+  assert_success _tailscale_disconnect logout <<< 'y' >/dev/null 2>&1
   assert_commands 'tailscale <logout>' '注销仅执行 tailscale logout'
   : > "$TAILSCALE_TEST_LOG"
-  assert_failure _tailscale_disconnect invalid <<< '确认' >/dev/null 2>&1
+  assert_failure _tailscale_disconnect invalid <<< 'y' >/dev/null 2>&1
   assert_commands '' '非法断开动作不能执行外部命令'
 )
 
 test_disconnect_cancelled() (
   stub_common_commands
-  _tailscale_disconnect logout <<< '否' >/dev/null 2>&1 || true
+  _tailscale_disconnect logout <<< 'n' >/dev/null 2>&1 || true
   assert_commands '' '取消注销不调用 Tailscale'
 )
 
 test_disconnect_cli_failure() (
   stub_common_commands
   tailscale() { record_command tailscale "$@"; return 25; }
-  assert_failure _tailscale_disconnect down <<< '确认' >/dev/null 2>&1
+  assert_failure _tailscale_disconnect down <<< 'y' >/dev/null 2>&1
   assert_commands 'tailscale <down>' '断开失败必须返回失败'
 )
 
 test_update_cancelled() (
   stub_common_commands
-  _tailscale_update <<< '否' >/dev/null 2>&1 || true
+  _tailscale_update <<< 'n' >/dev/null 2>&1 || true
   assert_commands '' '取消更新不执行包管理命令'
 )
 
@@ -327,14 +327,14 @@ test_update_package_failure() (
     record_command apt-get "$@"
     [[ "${1:-}" == "update" ]]
   }
-  assert_failure _tailscale_update <<< '确认' >/dev/null 2>&1
+  assert_failure _tailscale_update <<< 'y' >/dev/null 2>&1
   assert_commands $'apt-get <update>\napt-get <install> <-y> <--only-upgrade> <tailscale>' \
     '更新只针对 Tailscale 且包升级失败向上传递'
 )
 
 test_update_repository_failure() (
   stub_common_commands
-  assert_failure _tailscale_update <<< '确认' >/dev/null 2>&1
+  assert_failure _tailscale_update <<< 'y' >/dev/null 2>&1
   assert_commands 'apt-get <update>' '软件源更新失败后不继续升级软件包'
 )
 
@@ -371,7 +371,7 @@ test_manual_install_update() (
   stub_common_commands
   dpkg-query() { return 1; }
   apk() { return 1; }
-  assert_success _tailscale_update <<< '确认' >/dev/null 2>&1
+  assert_success _tailscale_update <<< 'y' >/dev/null 2>&1
   assert_commands 'tailscale <update>' '手动安装的 Tailscale 使用自身更新命令'
 )
 
@@ -380,21 +380,21 @@ test_manual_install_update_failure() (
   dpkg-query() { return 1; }
   apk() { return 1; }
   tailscale() { record_command tailscale "$@"; return 25; }
-  assert_failure _tailscale_update <<< '确认' >/dev/null 2>&1
+  assert_failure _tailscale_update <<< 'y' >/dev/null 2>&1
   assert_commands 'tailscale <update>' '自身更新命令失败必须向上传递'
 )
 
 test_uninstall_cancelled() (
   stub_common_commands
   rm() { record_command rm "$@"; return 27; }
-  _tailscale_uninstall <<< '否' >/dev/null 2>&1 || true
+  _tailscale_uninstall <<< 'n' >/dev/null 2>&1 || true
   assert_commands '' '取消卸载不执行服务或包管理命令'
 )
 
 test_uninstall_package_failure() (
   stub_common_commands
   rm() { record_command rm "$@"; return 27; }
-  assert_failure _tailscale_uninstall <<< '确认' >/dev/null 2>&1
+  assert_failure _tailscale_uninstall <<< 'y' >/dev/null 2>&1
   local commands
   commands="$(cat "$TAILSCALE_TEST_LOG")"
   [[ "$commands" == *'<tailscale>'* ]] || test_fail '卸载必须指定 tailscale 软件包'
@@ -406,7 +406,7 @@ test_manual_install_uninstall_rejected() (
   dpkg-query() { return 1; }
   apk() { return 1; }
   rm() { record_command rm "$@"; return 27; }
-  assert_failure _tailscale_uninstall <<< '确认' >/dev/null 2>&1
+  assert_failure _tailscale_uninstall <<< 'y' >/dev/null 2>&1
   assert_commands '' '手动安装来源未知时拒绝自动卸载且不删除状态'
 )
 
@@ -444,7 +444,7 @@ test_nft_takeover_guard() (
   stub_common_commands
   nft() { record_command nft "$@"; return 0; }
   # 即使保护条件被误删，否定输入也会阻止旧流程修改系统。
-  assert_failure _nft_do_install <<< '否' >/dev/null 2>&1
+  assert_failure _nft_do_install <<< 'n' >/dev/null 2>&1
   assert_commands '' '安装 Tailscale 后禁止全局清空 nftables'
 )
 
@@ -458,7 +458,7 @@ test_nft_new_install_guard() (
   assert_commands '' 'Tailscale 存在时新装 nftables 也不能触发全局接管'
 )
 
-run_case '中文明确确认与 EOF' test_confirmation
+run_case 'y/n 确认与默认取消、EOF' test_confirmation
 run_case 'systemd 与 OpenRC 服务映射' test_service_names
 run_case '已安装时跳过安装' test_install_already_present
 run_case '取消安装无外部操作' test_install_cancelled

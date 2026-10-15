@@ -2997,10 +2997,9 @@ do_ssh_config() {
 # ============================================================
 _tailscale_confirm() {
   local answer
-  printf '\n⚠️ 危险操作检测！\n操作类型：%s\n影响范围：%s\n风险评估：%s\n' "$1" "$2" "$3"
-  read -rp '请确认是否继续？[输入“是”、“确认”或“继续”，其他输入取消]: ' answer || return 1
+  read -rp "确认${1}？[y/N]: " answer || return 1
   case "$answer" in
-    是|确认|继续) return 0 ;;
+    y|Y) return 0 ;;
     *) echo "已取消"; return 1 ;;
   esac
 }
@@ -3039,8 +3038,7 @@ _tailscale_install() {
     echo "Tailscale 已安装；升级请使用“升级 Tailscale”。"
     return 0
   fi
-  _tailscale_confirm "安装 Tailscale" "安装软件包，并启动服务、设置开机自启" \
-    "非 Alpine 系统将执行 https://tailscale.com/install.sh 官方安装脚本并配置软件源" || return 0
+  _tailscale_confirm "安装 Tailscale 并启动服务" || return 0
 
   if command -v apk &>/dev/null; then
     local -a packages=(tailscale)
@@ -3078,8 +3076,7 @@ _tailscale_install() {
 _tailscale_connect() {
   require_root || return 1
   _tailscale_require_installed || return 1
-  _tailscale_confirm "登录 / 连接 Tailscale" "启动服务、设置开机自启并连接当前 Tailnet" \
-    "将应用此节点已有的 DNS 和路由偏好；首次登录需要打开终端显示的授权链接" || return 0
+  _tailscale_confirm "登录 / 连接 Tailscale" || return 0
   _tailscale_start_service || return 1
   echo "首次登录请在浏览器中打开下方链接完成授权；可按 Ctrl+C 中止等待。"
   # 不传额外参数，保留节点已有的非默认配置。
@@ -3118,8 +3115,7 @@ _tailscale_service_action() {
     start|restart|stop|enable|disable) ;;
     *) echo "无效的 Tailscale 服务操作。" >&2; return 1 ;;
   esac
-  _tailscale_confirm "Tailscale 服务操作：${action}" "服务 ${svc}" \
-    "停止或重启服务会中断 Tailscale 连接；禁用自启会影响下次开机，请保留公网 SSH 或控制台" || return 0
+  _tailscale_confirm "执行 Tailscale 服务操作：${action}" || return 0
   local result=0
   case "$action" in
     start) _svc_start "$svc" || result=1 ;;
@@ -3188,8 +3184,7 @@ _tailscale_change_preference() {
     true|false) ;;
     *) echo "设置值必须为 true 或 false。" >&2; return 1 ;;
   esac
-  _tailscale_confirm "修改 Tailscale 设置：${flag}=${value}" "仅修改当前节点的这一项偏好" \
-    "DNS 或路由可能改变；Tailscale SSH 会接管经 Tailscale 地址访问的 22 端口，可能中断会话且需 Tailnet 策略授权" || return 0
+  _tailscale_confirm "修改 Tailscale 设置：${flag}=${value}" || return 0
   if ! tailscale set "--${flag}=${value}"; then
     echo "设置失败，请确认服务运行，且当前版本支持 tailscale set。" >&2
     return 1
@@ -3256,8 +3251,7 @@ _tailscale_package_manager() {
 _tailscale_update() {
   require_root || return 1
   _tailscale_require_installed || return 1
-  _tailscale_confirm "升级 Tailscale" "仅升级 Tailscale 软件包" \
-    "升级可能重启服务并暂时中断连接，请保留公网 SSH 或控制台" || return 0
+  _tailscale_confirm "升级 Tailscale" || return 0
   local result=0
   case "$(_tailscale_package_manager)" in
     apt) apt-get update && apt-get install -y --only-upgrade tailscale || result=1 ;;
@@ -3281,8 +3275,7 @@ _tailscale_disconnect() {
     down|logout) ;;
     *) echo "无效的 Tailscale 连接操作。" >&2; return 1 ;;
   esac
-  _tailscale_confirm "Tailscale ${action}" "当前节点将断开 Tailnet；logout 后需要重新授权" \
-    "通过 Tailscale 建立的 SSH 会立即中断，请先切换到公网 SSH 或控制台" || return 0
+  _tailscale_confirm "执行 Tailscale ${action}" || return 0
   if ! tailscale "$action"; then
     echo "操作失败，请检查 Tailscale 服务及上方错误信息。" >&2
     return 1
@@ -3293,8 +3286,7 @@ _tailscale_disconnect() {
 _tailscale_uninstall() {
   require_root || return 1
   _tailscale_require_installed || return 1
-  _tailscale_confirm "卸载 Tailscale" "删除 Tailscale 软件包；保留本地状态和软件源配置" \
-    "Tailscale 连接会中断，依赖它的 SSH 将失联；管理控制台中的设备记录需另行处理" || return 0
+  _tailscale_confirm "卸载 Tailscale" || return 0
   local result=0
   case "$(_tailscale_package_manager)" in
     apt) apt-get remove -y tailscale || result=1 ;;
