@@ -21,6 +21,7 @@
 8. Cloudflare 测速
 9. SSH 客户端配置管理
 10. 清理备份文件
+11. Tailscale 安装与运维
 
 其中大多数功能需要 `root` 权限，测速和部分只读检测功能可在普通用户下执行，
 但为了减少权限相关的中断，建议使用 `sudo` 或 `root` 用户运行整个脚本。
@@ -33,7 +34,7 @@
 - 权限：涉及 SSH、主机名、防火墙、系统更新、nftables 等功能时需要
   `root`
 - 常见依赖：`curl`、`awk`、`sed`、`grep`、`systemctl`
-- 网络前提：Snell、NodeQuality、Cloudflare 测速等功能依赖外部
+- 网络前提：Snell、Tailscale、NodeQuality、Cloudflare 测速等功能依赖外部
   网络访问
 
 > 提示：如果目标系统没有启用 `systemd`、`ufw`、`firewalld` 或 `nftables`，
@@ -150,6 +151,40 @@ Cloudflare 的链路表现。
 
 建议在确认当前配置稳定可用后再执行，避免误删仍需回滚的备份。
 
+### 11. Tailscale 安装与运维
+
+主菜单选择 `11`，进入独立的 Tailscale 管理菜单：
+
+- **安装**：Linux 上下载并执行 [Tailscale 官方安装脚本](https://tailscale.com/install.sh)；
+  Alpine 使用 `apk` 安装 `tailscale`，OpenRC 环境同时安装 `tailscale-openrc`
+  （需要启用 community 仓库）。安装后启动服务并设置开机自启；已安装时跳过安装。
+- **登录 / 连接**：运行 `tailscale up`，首次连接按终端链接在浏览器中授权；
+  再次连接保留节点已有偏好。脚本不收集或保存认证密钥。
+- **状态与 IP**：查看版本、服务状态、开机自启状态、节点列表和 Tailscale 地址。
+- **服务与日志**：支持 systemd 的 `tailscaled` 和 OpenRC 的 `tailscale` 服务，
+  提供启动、重启、停止、自启管理；systemd 显示最近 80 条日志，OpenRC 提示查看 syslog。
+- **连接设置**：分别开关接受 Tailnet DNS、接受子网路由、Tailscale SSH；
+  使用 `tailscale set` 只修改选中的偏好。接受子网路由不会让本机发布子网，
+  Tailscale SSH 还需要 Tailnet 访问策略授权。
+- **网络诊断**：运行 `tailscale netcheck`，可输入节点名或 IP 执行 `tailscale ping`。
+- **升级**：检测软件包安装记录后使用对应包管理器升级 `tailscale`；其他安装方式尝试 `tailscale update`，
+  其支持范围取决于当前版本和平台。
+- **断开 / 注销 / 卸载**：断开保留登录，注销后需要重新授权；卸载使用系统包管理器，
+  保留本地状态和软件源配置，管理控制台里的设备记录需自行处理。
+  未识别到软件包记录时，需要按照原安装方式手动卸载。
+
+安装、连接、设置、升级和卸载等操作需要 `root`；状态与网络诊断可由普通用户执行，
+日志读取受系统权限限制。会修改系统或连接的操作必须输入“是”“确认”或“继续”才会执行。
+
+停止、重启、断开、注销、升级或卸载可能中断经 Tailscale 建立的 SSH 连接，
+请先准备公网 SSH 或控制台。启用 Tailscale SSH 可能改变经 Tailscale 地址连接到
+22 端口时的认证方式。
+
+脚本让 Tailscale 自行维护网络规则，不自动修改防火墙、发布子网或启用出口节点。
+检测到已安装 Tailscale 时，会阻止 nftables 菜单中的“安装并接管”操作；
+已有端口转发规则仍可管理。现有端口转发使用公网地址进行 SNAT，
+转发到 Tailnet 节点的场景需要单独配置与验证。
+
 ## 注意事项
 
 - 本项目以单脚本形式集中管理功能，执行前建议先阅读脚本中与你目标功能相关
@@ -166,11 +201,13 @@ Cloudflare 的链路表现。
 ```text
 .
 ├── README.md
-└── vps_tools.sh
+├── vps_tools.sh
+└── tests/
 ```
 
 - `vps_tools.sh`：主脚本，包含所有菜单功能和实现逻辑
 - `README.md`：项目说明与快速上手文档
+- `tests/`：SSH 配置和 Tailscale 运维测试；Tailscale 测试使用命令桩，不安装软件或修改网络
 
 ## 使用建议
 

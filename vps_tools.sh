@@ -1656,6 +1656,13 @@ _nft_setup_kernel() {
 
 _nft_do_install() {
   echo ""
+  # 发行版默认 nftables 配置也可能清空规则，安装前统一保护 Tailscale。
+  if command -v tailscale &>/dev/null; then
+    echo -e "${C_RED}[错误]${C_RESET} 检测到 Tailscale，已阻止安装并接管 nftables。"
+    echo "全局清空规则可能破坏 Tailscale 连接；请使用现有转发规则管理功能。"
+    echo "如需重新接管，请先通过公网 SSH 或控制台安排维护。"
+    return 1
+  fi
   if command -v nft &>/dev/null; then
     echo -e "${C_GREEN}[信息]${C_RESET} nftables 已安装。"
     nft --version 2>/dev/null || true
@@ -2915,6 +2922,355 @@ do_ssh_config() {
 }
 
 # ============================================================
+#  11) Tailscale 安装与运维
+# ============================================================
+_tailscale_confirm() {
+  local answer
+  printf '\n⚠️ 危险操作检测！\n操作类型：%s\n影响范围：%s\n风险评估：%s\n' "$1" "$2" "$3"
+  read -rp '请确认是否继续？[输入“是”、“确认”或“继续”，其他输入取消]: ' answer || return 1
+  case "$answer" in
+    是|确认|继续) return 0 ;;
+    *) echo "已取消"; return 1 ;;
+  esac
+}
+
+_tailscale_require_installed() {
+  if ! command -v tailscale &>/dev/null; then
+    echo "尚未安装 Tailscale，请先选择安装。" >&2
+    return 1
+  fi
+}
+
+_tailscale_service_name() {
+  case "$(_detect_init_system)" in
+    systemd) echo "tailscaled" ;;
+    openrc) echo "tailscale" ;;
+    *) echo "未检测到 systemd / OpenRC，请手动管理 tailscaled 服务。" >&2; return 1 ;;
+  esac
+}
+
+_tailscale_start_service() {
+  local svc
+  svc="$(_tailscale_service_name)" || return 1
+  if ! _svc_enable_now "$svc"; then
+    echo "Tailscale 服务启动或设置开机自启失败，请检查服务配置。" >&2
+    return 1
+  fi
+}
+
+_tailscale_install() {
+  require_root || return 1
+  if [[ "$(uname -s)" != "Linux" ]]; then
+    echo "此安装入口仅支持 Linux。" >&2
+    return 1
+  fi
+  if command -v tailscale &>/dev/null; then
+    echo "Tailscale 已安装；升级请使用“升级 Tailscale”。"
+    return 0
+  fi
+  _tailscale_confirm "安装 Tailscale" "安装软件包，并启动服务、设置开机自启" \
+    "非 Alpine 系统将执行 https://tailscale.com/install.sh 官方安装脚本并配置软件源" || return 0
+
+  if command -v apk &>/dev/null; then
+    local -a packages=(tailscale)
+    if [[ "$(_detect_init_system)" == "openrc" ]]; then
+      packages+=(tailscale-openrc)
+    fi
+    if ! apk add --no-cache "${packages[@]}"; then
+      echo "Tailscale 安装失败，请检查 Alpine community 仓库及网络。" >&2
+      return 1
+    fi
+  else
+    local installer
+    if ! command -v curl &>/dev/null; then
+      echo "请先通过系统包管理器安装 curl，再重试。" >&2
+      return 1
+    fi
+    if ! installer=$(curl -fsSL --connect-timeout 15 --max-time 180 https://tailscale.com/install.sh); then
+      echo "Tailscale 安装脚本下载失败，请检查网络后重试。" >&2
+      return 1
+    fi
+    if [[ -z "${installer//[[:space:]]/}" ]]; then
+      echo "Tailscale 安装脚本为空，已停止执行。" >&2
+      return 1
+    fi
+    if ! sh -c "$installer"; then
+      echo "Tailscale 安装失败，请查看上方安装输出。" >&2
+      return 1
+    fi
+  fi
+  _tailscale_require_installed || return 1
+  _tailscale_start_service || return 1
+  echo "Tailscale 已安装并启动，请选择“登录 / 连接”完成授权。"
+}
+
+_tailscale_connect() {
+  require_root || return 1
+  _tailscale_require_installed || return 1
+  _tailscale_confirm "登录 / 连接 Tailscale" "启动服务、设置开机自启并连接当前 Tailnet" \
+    "将应用此节点已有的 DNS 和路由偏好；首次登录需要打开终端显示的授权链接" || return 0
+  _tailscale_start_service || return 1
+  echo "首次登录请在浏览器中打开下方链接完成授权；可按 Ctrl+C 中止等待。"
+  # 不传额外参数，保留节点已有的非默认配置。
+  if ! tailscale up; then
+    echo "Tailscale 连接失败，请检查服务、网络和授权状态。" >&2
+    return 1
+  fi
+  echo "Tailscale 已连接。"
+}
+
+_tailscale_status() {
+  _tailscale_require_installed || return 1
+  local svc failed=0
+  echo "=== Tailscale 版本 ==="
+  tailscale version || failed=1
+  if svc="$(_tailscale_service_name)"; then
+    if _svc_is_active "$svc"; then echo "服务：运行中"; else echo "服务：未运行"; fi
+    if _svc_is_enabled "$svc"; then echo "开机自启：已启用"; else echo "开机自启：未启用"; fi
+  fi
+  echo "=== 节点状态 ==="
+  tailscale status || failed=1
+  echo "=== Tailscale 地址 ==="
+  tailscale ip || failed=1
+  if [[ "$failed" -ne 0 ]]; then
+    echo "部分状态获取失败，节点可能尚未登录或服务未启动。" >&2
+  fi
+  return "$failed"
+}
+
+_tailscale_service_action() {
+  local action="$1" svc
+  require_root || return 1
+  _tailscale_require_installed || return 1
+  svc="$(_tailscale_service_name)" || return 1
+  case "$action" in
+    start|restart|stop|enable|disable) ;;
+    *) echo "无效的 Tailscale 服务操作。" >&2; return 1 ;;
+  esac
+  _tailscale_confirm "Tailscale 服务操作：${action}" "服务 ${svc}" \
+    "停止或重启服务会中断 Tailscale 连接；禁用自启会影响下次开机，请保留公网 SSH 或控制台" || return 0
+  local result=0
+  case "$action" in
+    start) _svc_start "$svc" || result=1 ;;
+    restart) _svc_restart "$svc" || result=1 ;;
+    enable) _svc_enable "$svc" || result=1 ;;
+    stop|disable)
+      case "$(_detect_init_system)" in
+        systemd) systemctl "$action" "$svc" || result=1 ;;
+        openrc)
+          if [[ "$action" == "stop" ]]; then
+            rc-service "$svc" stop || result=1
+          else
+            rc-update del "$svc" default || result=1
+          fi
+          ;;
+        *) result=1 ;;
+      esac
+      ;;
+  esac
+  if [[ "$result" -ne 0 ]]; then
+    echo "Tailscale 服务操作失败，请检查初始化系统和服务配置。" >&2
+    return 1
+  fi
+  echo "Tailscale 服务操作已完成。"
+}
+
+_tailscale_logs() {
+  _tailscale_require_installed || return 1
+  local svc
+  svc="$(_tailscale_service_name)" || return 1
+  if [[ "$(_detect_init_system)" == "systemd" ]] && command -v journalctl &>/dev/null; then
+    journalctl -u "$svc" -n 80 --no-pager
+  else
+    echo "请检查系统 syslog 中的 tailscaled 日志（如 /var/log/messages）。"
+  fi
+}
+
+_tailscale_service_menu() {
+  local choice
+  while true; do
+    printf '\n=== Tailscale 服务管理 ===\n'
+    printf ' 1) 启动\n 2) 重启\n 3) 停止\n 4) 启用开机自启\n 5) 禁用开机自启\n 6) 查看最近日志\n 0) 返回\n'
+    read -rp '请输入选项 [0-6]: ' choice || return 0
+    case "$choice" in
+      1) _tailscale_service_action start || true ;;
+      2) _tailscale_service_action restart || true ;;
+      3) _tailscale_service_action stop || true ;;
+      4) _tailscale_service_action enable || true ;;
+      5) _tailscale_service_action disable || true ;;
+      6) _tailscale_logs || true ;;
+      0) return 0 ;;
+      *) echo "无效选项，请重新输入" ;;
+    esac
+  done
+}
+
+_tailscale_change_preference() {
+  local flag="$1" value="$2"
+  require_root || return 1
+  _tailscale_require_installed || return 1
+  case "$flag" in
+    accept-dns|accept-routes|ssh) ;;
+    *) echo "不支持的 Tailscale 设置项。" >&2; return 1 ;;
+  esac
+  case "$value" in
+    true|false) ;;
+    *) echo "设置值必须为 true 或 false。" >&2; return 1 ;;
+  esac
+  _tailscale_confirm "修改 Tailscale 设置：${flag}=${value}" "仅修改当前节点的这一项偏好" \
+    "DNS 或路由可能改变；Tailscale SSH 会接管经 Tailscale 地址访问的 22 端口，可能中断会话且需 Tailnet 策略授权" || return 0
+  if ! tailscale set "--${flag}=${value}"; then
+    echo "设置失败，请确认服务运行，且当前版本支持 tailscale set。" >&2
+    return 1
+  fi
+  echo "Tailscale 设置已更新。"
+}
+
+_tailscale_preferences_menu() {
+  local choice
+  while true; do
+    printf '\n=== Tailscale 连接设置 ===\n'
+    printf ' 1) 接受 Tailnet DNS\n 2) 不接受 Tailnet DNS\n 3) 接受子网路由\n 4) 不接受子网路由\n 5) 启用 Tailscale SSH\n 6) 关闭 Tailscale SSH\n 0) 返回\n'
+    echo "接受子网路由用于访问已发布的子网，不会把本机配置成子网路由器。"
+    read -rp '请输入选项 [0-6]: ' choice || return 0
+    case "$choice" in
+      1) _tailscale_change_preference accept-dns true || true ;;
+      2) _tailscale_change_preference accept-dns false || true ;;
+      3) _tailscale_change_preference accept-routes true || true ;;
+      4) _tailscale_change_preference accept-routes false || true ;;
+      5) _tailscale_change_preference ssh true || true ;;
+      6) _tailscale_change_preference ssh false || true ;;
+      0) return 0 ;;
+      *) echo "无效选项，请重新输入" ;;
+    esac
+  done
+}
+
+_tailscale_diagnose() {
+  _tailscale_require_installed || return 1
+  local target failed=0
+  echo "=== Tailscale 网络诊断 ==="
+  tailscale netcheck || failed=1
+  read -rp '请输入要测试的节点名或 Tailscale IP（留空跳过）: ' target || return "$failed"
+  if [[ -n "$target" ]]; then
+    if [[ ! "$target" =~ ^[a-zA-Z0-9][a-zA-Z0-9.:-]*$ ]]; then
+      echo "节点名称或地址格式无效。" >&2
+      return 1
+    fi
+    tailscale ping --c 3 "$target" || failed=1
+  fi
+  if [[ "$failed" -ne 0 ]]; then
+    echo "诊断存在失败项，请检查网络、登录状态及 Tailnet 访问策略。" >&2
+  fi
+  return "$failed"
+}
+
+_tailscale_package_manager() {
+  # 同时检查软件包记录，避免把手动安装的二进制误判为系统软件包。
+  if command -v apt-get &>/dev/null && command -v dpkg-query &>/dev/null &&
+      [[ "$(dpkg-query -W -f='${Status}' tailscale 2>/dev/null)" == "install ok installed" ]]; then
+    echo "apt"
+  elif command -v rpm &>/dev/null && rpm -q tailscale &>/dev/null; then
+    if command -v dnf &>/dev/null; then echo "dnf"
+    elif command -v yum &>/dev/null; then echo "yum"
+    else echo "unknown"
+    fi
+  elif command -v apk &>/dev/null && apk info -e tailscale &>/dev/null; then
+    echo "apk"
+  else
+    echo "unknown"
+  fi
+}
+
+_tailscale_update() {
+  require_root || return 1
+  _tailscale_require_installed || return 1
+  _tailscale_confirm "升级 Tailscale" "仅升级 Tailscale 软件包" \
+    "升级可能重启服务并暂时中断连接，请保留公网 SSH 或控制台" || return 0
+  local result=0
+  case "$(_tailscale_package_manager)" in
+    apt) apt-get update && apt-get install -y --only-upgrade tailscale || result=1 ;;
+    dnf) dnf upgrade -y tailscale || result=1 ;;
+    yum) yum update -y tailscale || result=1 ;;
+    apk) apk update && apk upgrade tailscale || result=1 ;;
+    *) tailscale update || result=1 ;;
+  esac
+  if [[ "$result" -ne 0 ]]; then
+    echo "Tailscale 升级失败，请检查软件源、网络及安装方式。" >&2
+    return 1
+  fi
+  echo "Tailscale 升级完成。"
+}
+
+_tailscale_disconnect() {
+  local action="$1"
+  require_root || return 1
+  _tailscale_require_installed || return 1
+  case "$action" in
+    down|logout) ;;
+    *) echo "无效的 Tailscale 连接操作。" >&2; return 1 ;;
+  esac
+  _tailscale_confirm "Tailscale ${action}" "当前节点将断开 Tailnet；logout 后需要重新授权" \
+    "通过 Tailscale 建立的 SSH 会立即中断，请先切换到公网 SSH 或控制台" || return 0
+  if ! tailscale "$action"; then
+    echo "操作失败，请检查 Tailscale 服务及上方错误信息。" >&2
+    return 1
+  fi
+  echo "Tailscale 连接操作已完成。"
+}
+
+_tailscale_uninstall() {
+  require_root || return 1
+  _tailscale_require_installed || return 1
+  _tailscale_confirm "卸载 Tailscale" "删除 Tailscale 软件包；保留本地状态和软件源配置" \
+    "Tailscale 连接会中断，依赖它的 SSH 将失联；管理控制台中的设备记录需另行处理" || return 0
+  local result=0
+  case "$(_tailscale_package_manager)" in
+    apt) apt-get remove -y tailscale || result=1 ;;
+    dnf) dnf remove -y tailscale || result=1 ;;
+    yum) yum remove -y tailscale || result=1 ;;
+    apk)
+      local -a packages=(tailscale)
+      if apk info -e tailscale-openrc &>/dev/null; then packages+=(tailscale-openrc); fi
+      apk del "${packages[@]}" || result=1
+      ;;
+    *)
+      echo "未识别到受支持的软件包安装记录，请按照原安装方式手动卸载。" >&2
+      return 1
+      ;;
+  esac
+  if [[ "$result" -ne 0 ]]; then
+    echo "Tailscale 卸载失败，请检查包管理器输出。" >&2
+    return 1
+  fi
+  echo "Tailscale 软件包已卸载；本地状态和管理控制台设备记录未清理。"
+}
+
+do_tailscale() {
+  local choice
+  while true; do
+    printf '\n=== Tailscale 安装与运维 ===\n'
+    if command -v tailscale &>/dev/null; then echo "安装状态：已安装"; else echo "安装状态：未安装"; fi
+    printf ' 1) 安装 Tailscale\n 2) 登录 / 连接\n 3) 查看状态与 IP\n 4) 服务管理与日志\n 5) 连接设置（DNS / 路由 / SSH）\n 6) 网络诊断\n 7) 升级 Tailscale\n 8) 断开连接（保留登录）\n 9) 注销登录\n 10) 卸载 Tailscale\n 0) 返回主菜单\n'
+    read -rp '请输入选项 [0-10]: ' choice || return 0
+    case "$choice" in
+      1) _tailscale_install || true ;;
+      2) _tailscale_connect || true ;;
+      3) _tailscale_status || true ;;
+      4) _tailscale_service_menu || true ;;
+      5) _tailscale_preferences_menu || true ;;
+      6) _tailscale_diagnose || true ;;
+      7) _tailscale_update || true ;;
+      8) _tailscale_disconnect down || true ;;
+      9) _tailscale_disconnect logout || true ;;
+      10) _tailscale_uninstall || true ;;
+      0) return 0 ;;
+      *) echo "无效选项，请重新输入" ;;
+    esac
+  done
+}
+
+# ============================================================
 #  主菜单
 # ============================================================
 show_menu() {
@@ -2932,6 +3288,7 @@ show_menu() {
   echo " 8) Cloudflare 测速"
   echo " 9) SSH 客户端配置管理"
   echo " 10) 清理备份文件"
+  echo " 11) Tailscale 安装与运维"
   echo " 0) 退出"
   echo -e "${C_CYAN}=========================================${C_RESET}"
 }
@@ -2939,7 +3296,7 @@ show_menu() {
 main() {
   while true; do
     show_menu
-    read -rp "请输入选项 [0-10]: " choice
+    read -rp "请输入选项 [0-11]: " choice || return 0
     echo ""
     case "$choice" in
       1) require_root && do_ssh_harden || true ;;
@@ -2952,6 +3309,7 @@ main() {
       8) do_speedtest || true ;;
       9) do_ssh_config || true ;;
       10) require_root && do_cleanup_backups || true ;;
+      11) do_tailscale || true ;;
       0) echo "再见！"; exit 0 ;;
       *) echo "无效选项，请重新输入" ;;
     esac

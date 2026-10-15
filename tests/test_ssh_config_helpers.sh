@@ -217,7 +217,7 @@ grep -q '_ssh_cfg_do_add()'    ./vps_tools.sh || { printf 'FAIL: _ssh_cfg_do_add
 grep -q '_ssh_cfg_do_delete()' ./vps_tools.sh || { printf 'FAIL: _ssh_cfg_do_delete() not found\n' >&2; exit 1; }
 grep -q '9) SSH 客户端配置管理' ./vps_tools.sh || { printf 'FAIL: menu item 9 not found\n' >&2; exit 1; }
 grep -q '9) do_ssh_config || true ;;' ./vps_tools.sh || { printf 'FAIL: case 9 not found\n' >&2; exit 1; }
-grep -q '请输入选项 \[0-10\]' ./vps_tools.sh || { printf 'FAIL: prompt range not updated\n' >&2; exit 1; }
+grep -q '请输入选项 \[0-11\]' ./vps_tools.sh || { printf 'FAIL: prompt range not updated\n' >&2; exit 1; }
 printf 'menu integration static checks passed\n'
 
 grep -q '9. SSH 客户端配置管理' ./README.md || { printf 'FAIL: README item 9 not found\n' >&2; exit 1; }
