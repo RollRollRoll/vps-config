@@ -83,6 +83,14 @@ sudo ./vps_tools.sh
 
 ### 3. 系统更新
 
+主菜单选择 `3`，进入系统更新菜单：
+
+- `1` **更新系统软件包**：执行现有的发行版软件包更新流程
+- `2` **Ubuntu 24.04 → 26.04 LTS 升级（含内核）**：进入分阶段的 Ubuntu 发行版升级菜单
+- `0` **返回主菜单**
+
+#### 更新系统软件包
+
 - 根据发行版执行系统软件包更新
 - Debian / Ubuntu 优先使用 `apt-get`，严格刷新索引后再升级；任一软件源刷新失败即停止，
   避免使用旧索引下载已经被替换的软件包
@@ -95,6 +103,56 @@ sudo ./vps_tools.sh
 镜像同步不一致或发行版停止维护时，单纯重试可能无法修复，需要核对对应发行版的官方源或归档说明。
 
 建议在业务低峰期执行，避免升级过程中影响正在运行的服务。
+
+#### Ubuntu 24.04 → 26.04 LTS 升级（含内核）
+
+这是 Ubuntu 官方发行版升级流程，系统软件包和内核随发行版一起升级。
+升级通道是否可用以 `do-release-upgrade` 查询到的官方实时元数据为准。
+脚本不会通过 `-d` 选择开发版本或绕过官方升级通道。
+
+升级前请准备 VPS 快照或完整备份，并确认能够使用供应商控制台恢复访问。
+脚本保存的本机配置快照不能代替完整系统备份。通过 SSH 操作时建议先进入
+`tmux` 会话，避免终端断开影响升级交互。
+
+子菜单提供以下阶段，按顺序执行：
+
+| 编号 | 阶段 | 操作 |
+| --- | --- | --- |
+| `1` | `prepare` 准备 | 检查系统，输入 `PREPARE` 确认后备份关键配置与软件包清单、完整更新当前系统并安装官方升级工具 |
+| `2` | `upgrade` 升级 | 输入 `UPGRADE` 确认后，启动官方 `do-release-upgrade` 交互式升级 |
+| `3` | `cleanup` 清理 | 升级并重启后，输入 `HEALTHY` 确认业务正常，再完整更新系统、预览待删除内容；输入 `REMOVE` 后清理冗余软件包、旧内核及 APT 缓存 |
+| `4` | `status` 状态 | 查看系统版本、内核、重启需求和阶段执行状态 |
+| `0` | 返回 | 返回系统更新菜单 |
+
+准备和升级阶段检查 Ubuntu 版本、宿主机环境、cgroup v2、磁盘空间和软件包健康状态。
+空间预检要求 `/` 和 `/var` 各至少有 5 GiB 可用空间，`/boot` 至少有 300 MiB；
+Ubuntu 官方升级工具仍会计算本次升级的实际空间需求。
+容器内无法通过此功能升级宿主系统与内核；运行 Docker、Kubernetes 等服务时，
+请先验证其 cgroup v2 兼容性。`prepare` 完成后如提示需要重启，请手动重启再继续升级。
+
+`upgrade` 保留 Ubuntu 官方升级工具的交互提示，需要审核软件包变更、配置文件冲突
+和服务重启。准备及清理阶段的 `apt-get full-upgrade` 也保留 APT 确认。
+软件源的发行版切换和第三方源处理交由官方升级器完成，请审核它的提示；重启由用户确认。
+
+正式升级完成后，先重启并确认能够正常登录，SSH、Docker、数据库等关键服务均正常，
+再进入 `cleanup`。输入 `HEALTHY` 确认业务正常后，脚本会刷新索引并执行
+`apt-get full-upgrade`；完整更新也可能移除软件包，需要审核 APT 显示的变更并确认。
+随后运行 `apt-get -s autoremove --purge` 保存清理预览；输入 `REMOVE` 后，
+才会执行实际的 `autoremove --purge`，同时保留 APT 自身的确认提示。
+`REMOVE` 仅控制后续自动清理，不控制前面的完整更新。
+请仔细审核待删除列表，特别是旧内核和相关配置文件。
+如果官方升级器明确返回失败，即使系统版本已显示为 26.04，脚本也会阻止自动清理；
+请先检查 `/var/log/dist-upgrade/` 并人工修复升级问题。
+
+可参阅 Ubuntu 官方的[发行版升级说明](https://documentation.ubuntu.com/server/how-to/software/upgrade-your-release/)
+和 [26.04 移除 cgroup v1 的发行说明](https://documentation.ubuntu.com/release-notes/26.04/changes-since-previous-interim/#cgroup-v1-removed)。
+
+| 路径 | 内容 |
+| --- | --- |
+| `/var/log/ubuntu-lts-24-to-26.log` | 阶段执行记录与 APT 输出 |
+| `/var/log/dist-upgrade/` | Ubuntu 官方发行版升级日志 |
+| `/var/backups/ubuntu-lts-24-to-26/` | 关键配置快照与软件包清单 |
+| `/var/lib/ubuntu-lts-24-to-26/` | 执行状态与清理预览 |
 
 ### 4. Snell 安装
 
@@ -216,8 +274,8 @@ Cloudflare 的链路表现。
 
 - `vps_tools.sh`：主脚本，包含所有菜单功能和实现逻辑
 - `README.md`：项目说明与快速上手文档
-- `tests/`：SSH 配置、系统更新和 Tailscale 运维测试；更新与 Tailscale 测试使用命令桩，
-  不安装软件或修改网络
+- `tests/`：SSH 配置、系统更新、Ubuntu LTS 升级和 Tailscale 运维测试；更新与 Tailscale
+  测试使用命令桩，Ubuntu LTS 升级测试不执行真实升级，不安装软件或修改网络
 
 ## 使用建议
 

@@ -906,6 +906,327 @@ do_system_update() {
   echo -e "\n${C_CYAN}系统更新完成${C_RESET}"
 }
 
+# Ubuntu LTS 升级分阶段执行；状态只按文本读取，不执行状态文件中的内容。
+_ubuntu_lts_paths() {
+  UBUNTU_LTS_STATE_DIR="${UBUNTU_LTS_STATE_DIR:-/var/lib/ubuntu-lts-24-to-26}"
+  UBUNTU_LTS_BACKUP_DIR="${UBUNTU_LTS_BACKUP_DIR:-/var/backups/ubuntu-lts-24-to-26}"
+  UBUNTU_LTS_LOG_FILE="${UBUNTU_LTS_LOG_FILE:-/var/log/ubuntu-lts-24-to-26.log}"
+}
+
+_ubuntu_lts_os_version() (
+  local ID='' VERSION_ID=''
+  [[ -r /etc/os-release ]] || return 1
+  . /etc/os-release
+  [[ "$ID" == ubuntu ]] || return 1
+  printf '%s\n' "$VERSION_ID"
+)
+
+_ubuntu_lts_boot_id() { cat /proc/sys/kernel/random/boot_id; }
+_ubuntu_lts_reboot_required() { [[ -e /run/reboot-required ]]; }
+
+_ubuntu_lts_check_platform() {
+  local expected="$1" version fs_type
+  if ! version=$(_ubuntu_lts_os_version) || [[ "$version" != "$expected" ]]; then
+    echo "此阶段只支持 Ubuntu ${expected}，请先查看当前系统版本。" >&2
+    return 1
+  fi
+  if [[ -e /.dockerenv || -e /run/.containerenv ]] ||
+      { command -v systemd-detect-virt &>/dev/null && systemd-detect-virt --container --quiet; }; then
+    echo "容器内不能执行此宿主系统升级，请在 VPS 宿主系统上操作。" >&2
+    return 1
+  fi
+  if ! fs_type=$(stat -fc %T /sys/fs/cgroup) || [[ "$fs_type" != cgroup2fs ]]; then
+    echo "Ubuntu 26.04 不支持 cgroup v1 / hybrid；请先完成 cgroup v2 迁移并验证业务。" >&2
+    return 1
+  fi
+}
+
+_ubuntu_lts_check_space() {
+  local path minimum available
+  # 这是最低预检值，升级器仍会按实际软件包重新计算所需空间。
+  for path in / /var /boot; do
+    case "$path" in /boot) minimum=307200 ;; *) minimum=5242880 ;; esac
+    if ! available=$(LC_ALL=C df -Pk "$path" | awk 'NR==2 {print $4}') ||
+        [[ ! "$available" =~ ^[0-9]+$ ]] || (( available < minimum )); then
+      echo "${path} 可用空间不足或无法读取：/ 与 /var 至少需要 5 GiB，/boot 至少需要 300 MiB。" >&2
+      return 1
+    fi
+  done
+}
+
+_ubuntu_lts_note() {
+  local message="$*"
+  printf '%s\n' "$message"
+  printf '[%s] %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$message" >> "$UBUNTU_LTS_LOG_FILE"
+}
+
+_ubuntu_lts_logged_command() {
+  local -a results
+  _ubuntu_lts_note "执行：$*" || return 1
+  if "$@" 2>&1 | tee -a "$UBUNTU_LTS_LOG_FILE"; then
+    return 0
+  else
+    results=("${PIPESTATUS[@]}")
+    echo "命令或日志记录失败，已停止当前阶段（命令：${results[0]}，日志：${results[1]}）。" >&2
+    return 1
+  fi
+}
+
+_ubuntu_lts_check_packages() {
+  local audit holds
+  if ! audit=$(LC_ALL=C dpkg --audit) || [[ -n "$audit" ]]; then
+    printf '软件包状态异常，请先处理 dpkg --audit 的结果：\n%s\n' "$audit" >&2
+    return 1
+  fi
+  if ! holds=$(apt-mark showhold) || [[ -n "$holds" ]]; then
+    printf '存在保留的软件包或无法读取保留列表，请先人工审核：\n%s\n' "$holds" >&2
+    return 1
+  fi
+  _ubuntu_lts_logged_command apt-get check
+}
+
+_ubuntu_lts_confirm() {
+  local word="$1" message="$2" answer
+  printf '%s\n' "$message"
+  read -rp "输入 ${word} 继续，其他输入取消：" answer || return 1
+  [[ "$answer" == "$word" ]]
+}
+
+_ubuntu_lts_backup() (
+  local destination
+  destination=$(mktemp -d "$UBUNTU_LTS_BACKUP_DIR/$(date +%Y%m%d-%H%M%S).XXXXXX") || return 1
+  # /etc 包含凭据，调用方以 umask 077 创建私有目录，不覆盖既有备份。
+  tar --acls --xattrs -C / -czf "$destination/etc.tar.gz" etc || return 1
+  dpkg-query -W -f='${binary:Package}\t${Version}\n' > "$destination/packages.tsv" || return 1
+  apt-mark showmanual > "$destination/manual-packages.txt" || return 1
+  cp /etc/os-release "$destination/os-release" || return 1
+  uname -a > "$destination/kernel.txt" || return 1
+  printf '%s\n' "$destination"
+)
+
+_ubuntu_lts_check_target() {
+  local result
+  if ! command -v do-release-upgrade &>/dev/null; then
+    echo "缺少官方升级工具，请先完成准备阶段。" >&2
+    return 1
+  fi
+  # 主配置可能被 release-upgrades.d 覆盖，以升级器实际发现的正式 LTS 为准。
+  if ! result=$(LC_ALL=C do-release-upgrade -c); then
+    printf '%s\n官方暂未提供可用升级通道，或检查失败；请稍后重试。\n' "$result" >&2
+    return 1
+  fi
+  printf '%s\n' "$result"
+  if ! printf '%s\n' "$result" | grep -Eq "^New release '26[.]04([.][0-9]+)? LTS' available[.]$"; then
+    echo "官方提供的目标不是 Ubuntu 26.04 LTS，已停止；请检查升级通道配置。" >&2
+    return 1
+  fi
+}
+
+_ubuntu_lts_prepare() {
+  local backup
+  _ubuntu_lts_check_platform 24.04 || return 1
+  _ubuntu_lts_check_space || return 1
+  _ubuntu_lts_check_packages || return 1
+  _ubuntu_lts_confirm PREPARE '将备份 /etc 和软件包清单，再完整更新当前系统并安装官方升级工具；APT 会要求审核可能的删除。请先做好 VPS 快照或完整备份，并确保能使用服务商控制台。' || return 0
+  # 准备重跑失败时不能继续使用上一次的就绪标记，原始备份仍然保留。
+  : > "$UBUNTU_LTS_STATE_DIR/prepared" || return 1
+  if ! backup=$(_ubuntu_lts_backup); then
+    echo "配置备份失败，已停止更新。" >&2
+    return 1
+  fi
+  _ubuntu_lts_note "配置与软件包清单备份：$backup（不能代替完整系统备份）" || return 1
+  _ubuntu_lts_logged_command _system_apt_refresh_indexes apt-get || return 1
+  _ubuntu_lts_logged_command apt-get -o APT::Get::Always-Include-Phased-Updates=true full-upgrade || return 1
+  _ubuntu_lts_logged_command apt-get install update-manager-core ubuntu-release-upgrader-core || return 1
+  _ubuntu_lts_check_packages || return 1
+  printf '%s\n' "$backup" > "$UBUNTU_LTS_STATE_DIR/prepared" || return 1
+  _ubuntu_lts_note '准备完成。正式升级前请核对快照、控制台、第三方软件兼容性及官方发行说明。' || return 1
+  if _ubuntu_lts_reboot_required; then
+    echo "当前系统要求重启。请安排手动重启，重新登录后再选择正式升级。"
+  fi
+}
+
+_ubuntu_lts_upgrade() {
+  local boot_id simulation="$UBUNTU_LTS_STATE_DIR/upgrade-preview.txt"
+  _ubuntu_lts_check_platform 24.04 || return 1
+  if [[ ! -s "$UBUNTU_LTS_STATE_DIR/prepared" ]]; then
+    echo "尚未完成准备阶段，请先准备并备份。" >&2
+    return 1
+  fi
+  if _ubuntu_lts_reboot_required; then
+    echo "当前系统要求重启，请手动重启后再正式升级。" >&2
+    return 1
+  fi
+  _ubuntu_lts_check_space || return 1
+  _ubuntu_lts_check_packages || return 1
+  _ubuntu_lts_check_target || return 1
+  _ubuntu_lts_confirm UPGRADE '将从 Ubuntu 24.04 升级到 26.04 LTS（含内核）。请确认已有完整备份；通过 SSH 操作时建议先进入 tmux。升级器会交互确认软件包、配置冲突和重启。' || return 0
+  _ubuntu_lts_logged_command _system_apt_refresh_indexes apt-get || return 1
+  if ! LC_ALL=C apt-get -s -o APT::Get::Always-Include-Phased-Updates=true full-upgrade > "$simulation" 2>&1; then
+    cat "$simulation" >&2
+    echo "当前系统的更新预检失败，已停止升级。" >&2
+    return 1
+  fi
+  if grep -Eq '^(Inst|Remv) ' "$simulation"; then
+    cat "$simulation"
+    echo "当前系统仍有待处理的软件包更新，请重新执行准备阶段。" >&2
+    return 1
+  fi
+  if ! boot_id=$(_ubuntu_lts_boot_id) || [[ -z "$boot_id" ]]; then
+    echo "无法读取启动标识，已停止升级。" >&2
+    return 1
+  fi
+  printf '%s\n' "$boot_id" > "$UBUNTU_LTS_STATE_DIR/upgrade-started-boot" || return 1
+  : > "$UBUNTU_LTS_STATE_DIR/upgraded" || return 1
+  : > "$UBUNTU_LTS_STATE_DIR/upgrade-failed" || return 1
+  _ubuntu_lts_note '启动官方 do-release-upgrade；详细交互记录由 /var/log/dist-upgrade/ 保存。' || return 1
+  # 保留升级器的原始终端，避免通过 tee 管道改变交互行为。不传 -d / -p。
+  if ! do-release-upgrade; then
+    printf '%s\n' '官方升级器返回失败，请先人工修复并核对升级日志。' > "$UBUNTU_LTS_STATE_DIR/upgrade-failed" || return 1
+    _ubuntu_lts_note '官方升级器失败或升级未完成，请检查 /var/log/dist-upgrade/。' || true
+    return 1
+  fi
+  if [[ "$(_ubuntu_lts_os_version)" != 26.04 ]]; then
+    printf '%s\n' '升级器退出后未检测到目标发行版。' > "$UBUNTU_LTS_STATE_DIR/upgrade-failed" || return 1
+    echo "未检测到 Ubuntu 26.04，升级可能已取消；不能视为升级完成。" >&2
+    return 1
+  fi
+  printf '%s\n' "$boot_id" > "$UBUNTU_LTS_STATE_DIR/upgraded" || return 1
+  _ubuntu_lts_note '发行版升级完成；请按升级器提示手动重启，并验证 SSH、网络和关键业务后再清理。'
+}
+
+_ubuntu_lts_cleanup() {
+  local previous_boot current_boot failed_units preview="$UBUNTU_LTS_STATE_DIR/cleanup-preview.txt"
+  _ubuntu_lts_check_platform 26.04 || return 1
+  if [[ -s "$UBUNTU_LTS_STATE_DIR/upgrade-failed" ]]; then
+    echo "此前发行版升级明确失败，请先检查 /var/log/dist-upgrade/ 并人工修复；本工具不会继续自动清理。" >&2
+    return 1
+  fi
+  if [[ ! -s "$UBUNTU_LTS_STATE_DIR/upgrade-started-boot" ]]; then
+    echo "没有本工具启动升级的记录，不能确认升级后的重启，已停止清理。" >&2
+    return 1
+  fi
+  previous_boot=$(cat "$UBUNTU_LTS_STATE_DIR/upgrade-started-boot") || return 1
+  current_boot=$(_ubuntu_lts_boot_id) || return 1
+  if [[ -z "$current_boot" || "$previous_boot" == "$current_boot" ]] || _ubuntu_lts_reboot_required; then
+    echo "请先在升级后手动重启并验证新系统，再执行清理。" >&2
+    return 1
+  fi
+  _ubuntu_lts_check_packages || return 1
+  if command -v systemctl &>/dev/null; then
+    if ! failed_units=$(systemctl --failed --no-legend --plain) || [[ -n "$failed_units" ]]; then
+      printf '请先检查失败的系统服务：\n%s\n' "$failed_units" >&2
+      return 1
+    fi
+  fi
+  _ubuntu_lts_confirm HEALTHY '请先确认重启后 SSH、网络、Docker、数据库等关键业务运行正常。接下来会完整更新新系统（可能移除软件包，APT 会要求确认），再生成冗余软件包和旧内核的删除预览。' || return 0
+  _ubuntu_lts_logged_command _system_apt_refresh_indexes apt-get || return 1
+  _ubuntu_lts_logged_command apt-get full-upgrade || return 1
+  _ubuntu_lts_check_packages || return 1
+  if _ubuntu_lts_reboot_required; then
+    echo "更新后再次要求重启；请手动重启并验证业务，再重新运行清理。"
+    return 1
+  fi
+  if ! LC_ALL=C apt-get -s autoremove --purge > "$preview" 2>&1; then
+    cat "$preview" >&2
+    echo "无法生成清理预览，已停止。" >&2
+    return 1
+  fi
+  _ubuntu_lts_logged_command cat "$preview" || return 1
+  _ubuntu_lts_confirm REMOVE '请审核上方将被删除的软件包和旧内核，确认业务正常且已保留所需回退内核；真正删除时 APT 还会要求确认。' || return 0
+  _ubuntu_lts_logged_command apt-get autoremove --purge || return 1
+  _ubuntu_lts_logged_command apt-get autoclean || return 1
+  _ubuntu_lts_logged_command apt-get clean || return 1
+  printf '%s\n' "$current_boot" > "$UBUNTU_LTS_STATE_DIR/cleaned" || return 1
+  _ubuntu_lts_note '升级后清理完成，配置备份与日志保留。'
+}
+
+_ubuntu_lts_status() {
+  local name label version
+  version=$(_ubuntu_lts_os_version) || version='非 Ubuntu 或无法读取'
+  printf 'Ubuntu 版本：%s\n运行内核：%s\n' "$version" "$(uname -r)"
+  printf '日志：%s\n官方升级日志：/var/log/dist-upgrade/\n备份：%s\n状态：%s\n' \
+    "$UBUNTU_LTS_LOG_FILE" "$UBUNTU_LTS_BACKUP_DIR" "$UBUNTU_LTS_STATE_DIR"
+  if [[ -d "$UBUNTU_LTS_STATE_DIR" && ( ! -r "$UBUNTU_LTS_STATE_DIR" || ! -x "$UBUNTU_LTS_STATE_DIR" ) ]]; then
+    echo '没有权限读取详细阶段状态，请使用 sudo 重新运行后查看。'
+    return 0
+  fi
+  for name in prepared upgrade-started-boot upgraded upgrade-failed cleaned; do
+    case "$name" in
+      prepared) label='准备完成记录' ;;
+      upgrade-started-boot) label='升级前启动标识' ;;
+      upgraded) label='升级完成记录' ;;
+      upgrade-failed) label='升级失败记录' ;;
+      cleaned) label='清理完成记录' ;;
+    esac
+    if [[ -s "$UBUNTU_LTS_STATE_DIR/$name" ]]; then
+      printf '%s：%s\n' "$label" "$(cat "$UBUNTU_LTS_STATE_DIR/$name")"
+    else
+      printf '%s：无记录\n' "$label"
+    fi
+  done
+  if _ubuntu_lts_reboot_required; then echo '系统提示：需要重启'; fi
+  return 0
+}
+
+do_ubuntu_lts_upgrade() (
+  local phase="${1:-status}" path
+  _ubuntu_lts_paths
+  if [[ "$phase" == status ]]; then _ubuntu_lts_status; return; fi
+  case "$phase" in prepare|upgrade|cleanup) ;; *) echo '未知升级阶段' >&2; return 1 ;; esac
+  require_root || return 1
+  # 所有阶段共享同一把锁，并保持配置快照、状态和日志仅供 root 读取。
+  umask 077
+  for path in "$UBUNTU_LTS_STATE_DIR" "$UBUNTU_LTS_BACKUP_DIR" "$UBUNTU_LTS_LOG_FILE"; do
+    if [[ -L "$path" ]]; then echo "拒绝使用符号链接路径：$path" >&2; return 1; fi
+  done
+  mkdir -p "$UBUNTU_LTS_STATE_DIR" "$UBUNTU_LTS_BACKUP_DIR" || return 1
+  for path in lock prepared upgrade-started-boot upgraded upgrade-failed cleaned upgrade-preview.txt cleanup-preview.txt; do
+    if [[ -L "$UBUNTU_LTS_STATE_DIR/$path" ]]; then echo '状态目录包含符号链接，已停止。' >&2; return 1; fi
+  done
+  : >> "$UBUNTU_LTS_LOG_FILE" || return 1
+  exec 9> "$UBUNTU_LTS_STATE_DIR/lock" || return 1
+  if ! flock -n 9; then echo '另一个升级阶段正在执行，请等待其完成。' >&2; return 1; fi
+  _ubuntu_lts_note "开始阶段：$phase" || return 1
+  if "_ubuntu_lts_$phase"; then
+    _ubuntu_lts_note "阶段已退出：$phase"
+  else
+    _ubuntu_lts_note "阶段失败：$phase，请处理错误后重试。" || true
+    return 1
+  fi
+)
+
+do_ubuntu_lts_upgrade_menu() {
+  local choice
+  while true; do
+    printf '\n=== Ubuntu 24.04 → 26.04 LTS 升级（含内核）===\n'
+    printf ' 1) 升级前准备（prepare）\n 2) 正式升级（upgrade）\n 3) 升级后清理（cleanup）\n 4) 查看状态（status）\n 0) 返回系统更新\n'
+    read -rp '请输入选项 [0-4]: ' choice || return 0
+    case "$choice" in
+      1) do_ubuntu_lts_upgrade prepare || true ;;
+      2) do_ubuntu_lts_upgrade upgrade || true ;;
+      3) do_ubuntu_lts_upgrade cleanup || true ;;
+      4) do_ubuntu_lts_upgrade status || true ;;
+      0) return 0 ;;
+      *) echo '无效选项，请重新输入' ;;
+    esac
+  done
+}
+
+do_system_update_menu() {
+  local choice
+  while true; do
+    printf '\n=== 系统更新 ===\n 1) 更新系统软件包\n 2) Ubuntu 24.04 → 26.04 LTS 升级（含内核）\n 0) 返回主菜单\n'
+    read -rp '请输入选项 [0-2]: ' choice || return 0
+    case "$choice" in
+      1) require_root && do_system_update || true ;;
+      2) do_ubuntu_lts_upgrade_menu || true ;;
+      0) return 0 ;;
+      *) echo '无效选项，请重新输入' ;;
+    esac
+  done
+}
+
 # ============================================================
 #  7) 服务器质量检测 (NodeQuality)
 # ============================================================
@@ -3364,7 +3685,7 @@ main() {
     case "$choice" in
       1) require_root && do_ssh_harden || true ;;
       2) require_root && do_change_hostname || true ;;
-      3) require_root && do_system_update || true ;;
+      3) do_system_update_menu || true ;;
       4) require_root && do_snell_install || true ;;
       5) require_root && do_firewall || true ;;
       6) require_root && do_nft_forward || true ;;
